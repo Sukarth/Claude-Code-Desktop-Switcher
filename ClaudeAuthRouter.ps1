@@ -13,7 +13,7 @@
       3. the running profile whose window was most recently in front
       4. Default, exactly as before
 
-    Only claude://login/... links are routed. Anything else goes to Default untouched.
+    Only sign-in callbacks (claude://login/... and claude://claude.ai/sso-callback...) are routed. Anything else goes to Default untouched.
     Claude re-registers itself as the handler every time it starts; the switcher takes
     the slot back whenever it launches a profile.
 
@@ -39,7 +39,7 @@ try { Initialize-ClaudeLib } catch { Write-RouterLog "FAILED to locate Claude: $
 if ($Status) {
     "Handler key:     $($script:CmdPath)"
     "Current command: $(if (Test-Path -LiteralPath $script:CmdPath) { (Get-ItemProperty $script:CmdPath).'(default)' } else { '<none>' })"
-    "Router active:   $(if (Test-RouterActive) { 'yes' } else { 'no - Claude owns the scheme until a profile is launched' })"
+    "Router active:   $(Get-RouterStateText)"
     "Backup saved:    $(Test-Path -LiteralPath $script:BackupPath)"
     "Pending login:   $(if ($p = Get-PendingLogin) { $p } else { '<none>' })"
     "Log:             $($script:RouterLog)"
@@ -56,7 +56,7 @@ if ($Unregister) { Restore-RouterRegistration; Clear-PendingLogin; return }
 
 if ($Expect) {
     Set-PendingLogin -Name $Expect -Minutes $Minutes
-    if (-not (Test-RouterActive)) { Set-RouterRegistration }
+    if (-not (Test-RouterRegistered)) { Set-RouterRegistration }
     "Next login callback within $Minutes minutes goes to '$Expect'."
     return
 }
@@ -72,9 +72,10 @@ function Test-SafeLink {
     # -ArgumentList array is joined without reliable quoting, so the input is validated
     # instead: claude:// followed only by characters RFC 3986 permits in a URI. That
     # excludes the quote, backslash, space and control characters an injection needs.
+    # Anchored with \z, not $: in .NET $ also matches before a trailing newline.
     param([string]$Link)
     if ([string]::IsNullOrEmpty($Link) -or $Link.Length -gt 2048) { return $false }
-    return ($Link -cmatch "^claude://[A-Za-z0-9._~:/?#\[\]@!\$&'()*+,;=%-]*$")
+    return ($Link -cmatch "^claude://[A-Za-z0-9._~:/?#\[\]@!\$&'()*+,;=%-]*\z")
 }
 
 function Start-ClaudeWithUrl {
@@ -93,7 +94,9 @@ try {
         return
     }
 
-    if ($Url -notmatch '^claude://login/') {
+    # Two callback shapes: claude://login/... and, on current builds (2.7032, Store),
+    # claude://claude.ai/sso-callback?code=...
+    if ($Url -notmatch '^claude://(login/|claude\.ai/sso-callback(?:[/?#]|\z))') {
         Start-ClaudeWithUrl -Link $Url
         Write-RouterLog 'Non-login link; passed to Default.'
         return
@@ -127,7 +130,7 @@ try {
 
     # Claude re-registers the scheme as it starts; take it back so the next login works too.
     Start-Sleep -Seconds 4
-    try { if (-not (Test-RouterActive)) { Set-RouterRegistration } } catch { }
+    try { if (-not (Test-RouterRegistered)) { Set-RouterRegistration } } catch { }
 } catch {
     Write-RouterLog "FAILED: $($_.Exception.Message)"
     throw
